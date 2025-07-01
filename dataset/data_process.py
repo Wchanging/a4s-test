@@ -88,10 +88,10 @@ if __name__ == "__main__":
 
         # Print the top 10 users by frequency
         print("Top 10 users by frequency:")
-        print(user_frequencies.head(10))
+        print(user_frequencies.head(50))
 
     # if data is not None:
-    #     user_id_column = 'uid'
-    #     user_num = 100
-    #     output_file_path = 'data/weibo/top_users_comments.csv'
-    #     save_user_data(data, output_file_path, user_num, user_id_column)
+        user_id_column = 'uid'
+        user_num = 100
+        output_file_path = 'data/weibo/top_users_comments.csv'
+        save_user_data(data, output_file_path, user_num, user_id_column)
