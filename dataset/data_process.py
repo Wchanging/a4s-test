@@ -110,7 +110,7 @@ def save_user_data_json(data, output_file_path, user_num, user_id_column='uid'):
 def get_user_history_data_json(meta_data, comments_data, uid, user_id_column='uid', article_id_column='article_id',
                                comment_id_column='comment_id', parent_comment_id_column='parent_comment_id',
                                content_column='content', img_column='img_urls', video_column='video_urls',
-                               created_time='created_time'):
+                               created_time='created_time', question_id_column='question_id', answer_id_column='answer_id'):
     """ Save user history data to a JSON file.
     Args:
         meta_data (pd.DataFrame): DataFrame containing article metadata.
@@ -124,6 +124,8 @@ def get_user_history_data_json(meta_data, comments_data, uid, user_id_column='ui
         img_column (str): Column name for image URLs.
         video_column (str): Column name for video URLs.
         created_time (str): Column name for creation time.
+        question_id_column (str): Column name for question IDs (for Q&A content).
+        answer_id_column (str): Column name for answer IDs (for Q&A content).
 
     Process:
         1. Load metadata and comments data from CSV files.
@@ -192,50 +194,111 @@ def get_user_history_data_json(meta_data, comments_data, uid, user_id_column='ui
         print(f"No comments found for user ID: {uid}")
         return
 
-    # Step 3: Find out the article IDs associated with the user's comments
-    article_ids = user_comments[article_id_column].unique()
+    # Step 3: Find out the article IDs or question/answer IDs associated with the user's comments
+    # Check if this is article-based or Q&A-based content
+    has_articles = article_id_column in user_comments.columns and user_comments[article_id_column].notna().any()
+    has_qa = (question_id_column in user_comments.columns and answer_id_column in user_comments.columns and
+              user_comments[question_id_column].notna().any() and user_comments[answer_id_column].notna().any())
 
-    # Step 4: Create a mapping of article IDs to their comments, images, and videos
+    if has_articles:
+        content_ids = user_comments[article_id_column].unique()
+        content_type = 'article'
+        id_column = article_id_column
+    elif has_qa:
+        # For Q&A, combine question_id and answer_id as the content identifier
+        user_comments['qa_id'] = user_comments[question_id_column].astype(str) + '_' + user_comments[answer_id_column].astype(str)
+        content_ids = user_comments['qa_id'].unique()
+        content_type = 'qa'
+        id_column = 'qa_id'
+    else:
+        print(f"No valid content identifiers found for user {uid}")
+        return
+
+    # Step 4: Create a mapping of content IDs to their comments, images, and videos
     result = {
         "uid": uid,
         "articles": []
     }
 
-    for article_id in article_ids:
-        # Get article metadata
-        article_meta = meta_data[meta_data[article_id_column] == article_id]
+    for content_id in content_ids:
+        # Get content metadata based on content type
+        if content_type == 'article':
+            content_meta = meta_data[meta_data[article_id_column] == content_id]
+            content_info = {
+                "article_id": content_id,
+                "content_type": "article",
+                "article_content": "",
+                "article_images": [],
+                "article_videos": [],
+                "comments": []
+            }
+        else:  # Q&A type
+            question_id, answer_id = content_id.split('_')
+            # First try to find by both question_id and answer_id
+            content_meta = meta_data[
+                (meta_data[question_id_column] == question_id) &
+                (meta_data[answer_id_column] == answer_id)
+            ]
+            content_info = {
+                "question_id": question_id,
+                "answer_id": answer_id,
+                "content_type": "qa",
+                "question_content": "",
+                "answer_content": "",
+                "content_images": [],
+                "content_videos": [],
+                "comments": []
+            }
 
-        article_info = {
-            "article_id": article_id,
-            "article_content": "",
-            "article_images": [],
-            "article_videos": [],
-            "comments": []  # 改为列表格式
-        }
+        # Add content and media if available
+        if not content_meta.empty:
+            content_row = content_meta.iloc[0]
+            if content_type == 'article':
+                if content_column in content_meta.columns:
+                    article_content = content_row.get(content_column, "")
+                    # Handle NaN article content
+                    if pd.isna(article_content):
+                        article_content = ""
+                    content_info["article_content"] = str(article_content)
+                if img_column in content_meta.columns and pd.notna(content_row.get(img_column)):
+                    img_urls = str(content_row[img_column]).strip('[]').split(',')
+                    content_info["article_images"] = [url.strip().strip("'\"") for url in img_urls if url.strip()]
+                if video_column in content_meta.columns and pd.notna(content_row.get(video_column)):
+                    video_urls = str(content_row[video_column]).strip('[]').split(',')
+                    content_info["article_videos"] = [url.strip().strip("'\"") for url in video_urls if url.strip()]
+            else:  # Q&A type
+                # Handle question content
+                if 'title' in content_meta.columns:
+                    question_content = content_row.get('title', "")
+                    if pd.isna(question_content):
+                        question_content = ""
+                    content_info["question_content"] = str(question_content)
 
-        # Add article content and media if available
-        if not article_meta.empty:
-            article_row = article_meta.iloc[0]
-            if content_column in article_meta.columns:
-                article_content = article_row.get(content_column, "")
-                # Handle NaN article content
-                if pd.isna(article_content):
-                    article_content = ""
-                article_info["article_content"] = str(article_content)
-            if img_column in article_meta.columns and pd.notna(article_row.get(img_column)):
-                img_urls = str(article_row[img_column]).strip('[]').split(',')
-                article_info["article_images"] = [url.strip().strip("'\"") for url in img_urls if url.strip()]
-            if video_column in article_meta.columns and pd.notna(article_row.get(video_column)):
-                video_urls = str(article_row[video_column]).strip('[]').split(',')
-                article_info["article_videos"] = [url.strip().strip("'\"") for url in video_urls if url.strip()]
+                # Handle answer content
+                if content_column in content_meta.columns:
+                    answer_content = content_row.get(content_column, "")
+                    if pd.isna(answer_content):
+                        answer_content = ""
+                    content_info["answer_content"] = str(answer_content)
 
-        # Get all comments for this article by the user
-        article_comments = user_comments[user_comments[article_id_column] == article_id]
+                # Handle media
+                if img_column in content_meta.columns and pd.notna(content_row.get(img_column)):
+                    img_urls = str(content_row[img_column]).strip('[]').split(',')
+                    content_info["content_images"] = [url.strip().strip("'\"") for url in img_urls if url.strip()]
+                if video_column in content_meta.columns and pd.notna(content_row.get(video_column)):
+                    video_urls = str(content_row[video_column]).strip('[]').split(',')
+                    content_info["content_videos"] = [url.strip().strip("'\"") for url in video_urls if url.strip()]
+
+        # Get all comments for this content by the user
+        if content_type == 'article':
+            content_comments = user_comments[user_comments[article_id_column] == content_id]
+        else:  # Q&A type
+            content_comments = user_comments[user_comments['qa_id'] == content_id]
 
         # Group comments by parent_comment_id to consolidate replies
         comment_groups = {}
 
-        for _, comment_row in article_comments.iterrows():
+        for _, comment_row in content_comments.iterrows():
             comment_id = comment_row[comment_id_column]
 
             # Determine the grouping key (parent_comment_id or 'root' for top-level comments)
@@ -322,9 +385,9 @@ def get_user_history_data_json(meta_data, comments_data, uid, user_id_column='ui
                     "videos": reply["videos"]
                 })
 
-            article_info["comments"].append(comment_group)
+            content_info["comments"].append(comment_group)
 
-        result["articles"].append(article_info)
+        result["articles"].append(content_info)
 
     # Step 5: Sort comment groups by the earliest comment time in each group
     for article in result["articles"]:
@@ -339,7 +402,9 @@ def get_user_history_data_json(meta_data, comments_data, uid, user_id_column='ui
         return None
 
 
-def save_users_history(meta_data, comments_data, output_file_path, user_num=10, user_id_column='uid'):
+def save_users_history(meta_data, comments_data, output_file_path, user_num=10, user_id_column='uid',
+                       article_id_column='article_id', question_id_column='question_id', answer_id_column='answer_id',
+                       top_or_random='random'):
     """
     Save data for a specific number of most frequent users to a JSON file.
 
@@ -354,7 +419,13 @@ def save_users_history(meta_data, comments_data, output_file_path, user_num=10, 
 
     # Get the most frequent users
     users_frequency = count_users_frequency(comments_data, user_id_column=user_id_column)
-    top_users = users_frequency.head(user_num).index
+    # top_users = users_frequency.head(user_num).index
+    if top_or_random == 'top':
+        top_users = users_frequency.head(user_num).index
+    elif top_or_random == 'random':
+        top_users = users_frequency.sample(n=user_num, random_state=42).index
+    else:
+        raise ValueError("top_or_random must be either 'top' or 'random'.")
 
     # Save each user's history data to JSON
     user_histories = []
@@ -364,6 +435,9 @@ def save_users_history(meta_data, comments_data, output_file_path, user_num=10, 
             comments_data=comments_data,
             uid=uid,
             user_id_column=user_id_column,
+            article_id_column=article_id_column,
+            question_id_column=question_id_column,
+            answer_id_column=answer_id_column,
         )
         if user_history_json:
             user_histories.append(json.loads(user_history_json))
@@ -377,7 +451,7 @@ def save_users_history(meta_data, comments_data, output_file_path, user_num=10, 
 
 if __name__ == "__main__":
     # Example usage
-    data_fold = "data/xhs/"
+    data_fold = "data/weibo/"
     meta_data = load_data(data_fold + 'contents.csv')
     comments_data = load_data(data_fold + 'comments.csv')
 
@@ -385,40 +459,9 @@ if __name__ == "__main__":
         meta_data=meta_data,
         comments_data=comments_data,
         output_file_path=data_fold + 'user_histories.json',
-        user_num=50,
-        user_id_column='uid'  # Change to 'uid' if needed
+        user_num=100,
+        user_id_column='uid',
+        article_id_column='article_id',  # 文章类型
+        question_id_column='question_id',  # 问答类型
+        answer_id_column='answer_id'  # 问答类型
     )
-
-    # file_path = 'data/weibo/comments.csv'
-    # data = load_data(file_path)
-
-    # if data is not None:
-    #     # Count user frequencies
-    #     user_frequencies = count_users_frequency(data)
-
-    #     # Print the top 10 users by frequency
-    #     print("Top 10 users by frequency:")
-    #     print(user_frequencies.head(10))
-
-    #     # Get data for one user to JSON for testing
-    #     result = get_user_history_data_json(
-    #         meta_path='data/weibo/contents.csv',
-    #         comments_path='data/weibo/comments.csv',
-    #         uid=user_frequencies.index[0],  # Use the first user from the frequency count
-    #         user_id_column='uid',
-    #         article_id_column='article_id',
-    #         comment_id_column='comment_id',
-    #         parent_comment_id_column='parent_comment_id',
-    #         content_column='content',
-    #         img_column='img_urls',
-    #         video_column='video_urls',
-    #         created_time='created_time'
-    #     )
-
-    #     result_file_path = 'data/weibo/user_history_data.json'
-    #     if result:
-    #         with open(result_file_path, 'w', encoding='utf-8') as f:
-    #             f.write(result)
-    #         print(f"User history data saved to: {result_file_path}")
-    #     else:
-    #         print("Failed to save user history data.")
